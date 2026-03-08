@@ -1,26 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { auth, db } from './firebase'
 import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged
-} from 'firebase/auth'
-import {
-  collection,
-  addDoc,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  serverTimestamp
-} from 'firebase/firestore'
-import {
-  MessageCircle, Send, User, Mail, Lock, LogOut, Sparkles,
+  MessageCircle, Send, User, Lock, LogOut, Sparkles,
   Zap, FileText, Cloud, Calendar, Github, Search, Bot, Globe, Clock, Terminal, BookOpen
 } from 'lucide-react'
 
-const API_URL = 'http://localhost:18790'
+const STORAGE_KEY = 'nanobot_user'
+const CHATS_KEY = 'nanobot_chats'
+const DEFAULT_USER = { username: 'Awooda', password: 'Sale7k0cash' }
+
+const API_URL = import.meta.env.VITE_API_URL || 'https://bunny-promiseful-beau.ngrok-free.dev'
 
 const CAPABILITIES = [
   { icon: Bot, title: 'AI Chat', desc: 'Natural conversations' },
@@ -35,11 +23,35 @@ const CAPABILITIES = [
   { icon: Zap, title: 'Automation', desc: 'Workflows' }
 ]
 
+// Local storage helpers
+const getStoredUser = () => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEY)
+    return data ? JSON.parse(data) : null
+  } catch { return null }
+}
+
+const setStoredUser = (user) => {
+  if (user) localStorage.setItem(STORAGE_KEY, JSON.stringify(user))
+  else localStorage.removeItem(STORAGE_KEY)
+}
+
+const getStoredChats = () => {
+  try {
+    const data = localStorage.getItem(CHATS_KEY)
+    return data ? JSON.parse(data) : []
+  } catch { return [] }
+}
+
+const saveChats = (chats) => {
+  localStorage.setItem(CHATS_KEY, JSON.stringify(chats))
+}
+
 export default function App() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState('home')
-  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   const [messages, setMessages] = useState([])
@@ -47,61 +59,111 @@ export default function App() {
   const [sending, setSending] = useState(false)
   const messagesEnd = useRef(null)
 
+  // Check for stored session on load
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, u => { setUser(u); setLoading(false) })
-    return unsub
+    const stored = getStoredUser()
+    if (stored) {
+      setUser(stored)
+      setMessages(getStoredChats())
+    }
+    setLoading(false)
   }, [])
 
+  // Scroll to bottom when messages change
   useEffect(() => {
-    if (!user) return
-    const q = query(collection(db, 'chats'), where('uid', '==', user.uid), orderBy('createdAt', 'asc'))
-    const unsub = onSnapshot(q, snap => {
-      setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-      messagesEnd.current?.scrollIntoView({ behavior: 'smooth' })
-    })
-    return unsub
-  }, [user])
+    messagesEnd.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
-  const login = async e => {
+  const login = async (e) => {
     e.preventDefault()
-    try { await signInWithEmailAndPassword(auth, email, password) }
-    catch (err) { setAuthError(err.message) }
+    setAuthError('')
+    
+    if (username === DEFAULT_USER.username && password === DEFAULT_USER.password) {
+      const userData = { username, createdAt: Date.now() }
+      setStoredUser(userData)
+      setUser(userData)
+      setMessages(getStoredChats())
+    } else {
+      setAuthError('Invalid username or password')
+    }
   }
 
-  const signup = async e => {
-    e.preventDefault()
-    try { await createUserWithEmailAndPassword(auth, email, password) }
-    catch (err) { setAuthError(err.message) }
+  const logout = () => {
+    setStoredUser(null)
+    setUser(null)
+    setUsername('')
+    setPassword('')
   }
 
-  const logout = () => signOut(auth)
-
-  const sendMessage = async e => {
+  const sendMessage = async (e) => {
     e.preventDefault()
     if (!input.trim() || sending) return
+    
     const text = input.trim()
     setInput('')
     setSending(true)
+    
+    // Add user message
+    const userMsg = { id: Date.now(), role: 'user', text, createdAt: Date.now() }
+    const newMessages = [...messages, userMsg]
+    setMessages(newMessages)
+    saveChats(newMessages)
+    
     try {
-      await addDoc(collection(db, 'chats'), {
-        uid: user.uid, role: 'user', text, createdAt: serverTimestamp()
-      })
       const res = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, userId: user.uid })
+        body: JSON.stringify({ message: text, userId: user.username })
       })
       const data = await res.json()
-      await addDoc(collection(db, 'chats'), {
-        uid: user.uid, role: 'assistant', text: data.reply || 'Sorry, I had an issue.',
-        createdAt: serverTimestamp()
-      })
+      
+      const assistantMsg = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        text: data.reply || 'Sorry, I had an issue processing that.',
+        createdAt: Date.now()
+      }
+      
+      const updatedMessages = [...newMessages, assistantMsg]
+      setMessages(updatedMessages)
+      saveChats(updatedMessages)
     } catch (err) {
-      await addDoc(collection(db, 'chats'), {
-        uid: user.uid, role: 'assistant', text: `Error: ${err.message}`, createdAt: serverTimestamp()
-      })
+      const errorMsg = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        text: `Error: Unable to connect to NanoBot. Make sure the server is running. (${err.message})`,
+        createdAt: Date.now()
+      }
+      
+      const updatedMessages = [...newMessages, errorMsg]
+      setMessages(updatedMessages)
+      saveChats(updatedMessages)
     }
+    
     setSending(false)
+  }
+
+  // Biometric auth check
+  const checkBiometric = async () => {
+    if (window.PublicKeyCredential) {
+      try {
+        // Check if biometric is available
+        const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+        if (available && getStoredUser()) {
+          // Auto-login with stored session
+          // In a real app, you'd verify biometric here
+          const stored = getStoredUser()
+          if (stored) {
+            setUser(stored)
+            setMessages(getStoredChats())
+            return true
+          }
+        }
+      } catch (e) {
+        // Biometric not available, fall back to password
+      }
+    }
+    return false
   }
 
   if (loading) {
@@ -126,19 +188,25 @@ export default function App() {
           </div>
           <form onSubmit={login} className="space-y-4">
             <div className="relative">
-              <Mail className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
+              <User className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
               <input
-                type="email" placeholder="Email" value={email}
-                onChange={e => setEmail(e.target.value)}
+                type="text" 
+                placeholder="Username" 
+                value={username}
+                onChange={e => setUsername(e.target.value)}
                 className="w-full bg-slate-800 text-white pl-10 pr-4 py-3 rounded-xl border border-slate-700 focus:border-indigo-500 focus:outline-none"
+                autoComplete="username"
               />
             </div>
             <div className="relative">
               <Lock className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
               <input
-                type="password" placeholder="Password" value={password}
+                type="password" 
+                placeholder="Password" 
+                value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="w-full bg-slate-800 text-white pl-10 pr-4 py-3 rounded-xl border border-slate-700 focus:border-indigo-500 focus:outline-none"
+                autoComplete="current-password"
               />
             </div>
             {authError && <p className="text-red-400 text-sm text-center">{authError}</p>}
@@ -148,13 +216,10 @@ export default function App() {
             >
               Sign In
             </button>
-            <button
-              type="button" onClick={signup}
-              className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl font-medium transition"
-            >
-              Create Account
-            </button>
           </form>
+          <p className="text-slate-500 text-xs text-center mt-4">
+            Use your NanoBot credentials
+          </p>
         </div>
       </div>
     )
